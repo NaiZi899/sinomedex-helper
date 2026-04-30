@@ -13,7 +13,7 @@ Sinomedex 在线考试平台的答题辅助油猴脚本。自动调用 AI 接口
 ## 安装（提示，本插件基于谷歌浏览器开发，其他浏览器会有些许问题）
 
 1. 浏览器安装 [Tampermonkey](https://www.tampermonkey.net/) 扩展
-2. 下载 **[Sinomedex-Helper.txt](https://raw.githubusercontent.com/NaiZi899/sinomedex-helper/main/Sinomedex-Helper.txt)**，下载完成后**拖入 Tampermonkey 扩展**中
+2. 下载 仓库中的Sinomedex-Helper.txt，下载完成后**拖入 Tampermonkey 扩展**中
 3. 打开任意 Sinomedex 考试页面，点击右下角 **AI** 按钮打开面板
 4. 填入你的 API Key 并保存
 
