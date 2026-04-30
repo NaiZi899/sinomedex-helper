@@ -1,0 +1,355 @@
+// ==UserScript==
+// @name         Sinomedex 自动答题
+// @namespace    http://tampermonkey.net/
+// @description  自动答题 + 自动提交 + 自动继续。注入 script 到页面上下文绕过油猴沙箱限制。
+// @author       Naizi
+// @match        *://sinomedex.org/*
+// @match        *://*.sinomedex.org/*
+// @grant        GM_xmlhttpRequest
+// @grant        GM_setValue
+// @grant        GM_getValue
+// @grant        GM_addStyle
+// @run-at       document-end
+// @allFrames    true
+// @connect      *
+// ==/UserScript==
+
+(function() {
+    'use strict';
+
+    // ====== 注入页面点击代理（运行在页面上下文）=======
+    function injectClickAgent() {
+        const script = document.createElement('script');
+        script.textContent = `
+(function(){
+    // 代理函数：在页面上下文中执行点击
+    window.__autoClickAgent = function(optionIndex, doSubmit, doContinue) {
+        var items = document.querySelectorAll('.choice-view');
+        var targetEl = items[optionIndex];
+        if (!targetEl) return 'no_target';
+
+        var container = targetEl.querySelector('.choice-view__choice-container');
+        var radio = targetEl.querySelector('input[type=\\'radio\\']');
+        var textEl = targetEl.querySelector('.choice-content span, .choice-content p, .choice-content') || targetEl;
+
+        // 方法1: 完整事件序列
+        try {
+            var seq = ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click'];
+            for (var i = 0; i < seq.length; i++) {
+                var evt = new MouseEvent(seq[i], {
+                    bubbles: true, cancelable: true,
+                    view: window, button: 0, buttons: 1,
+                    clientX: 100, clientY: 100
+                });
+                try { Object.defineProperty(evt, 'isTrusted', { value: true }); } catch(e) {}
+                textEl.dispatchEvent(evt);
+            }
+        } catch(e) {}
+
+        // 方法2: radio.click()
+        if (radio) { try { radio.click(); } catch(e) {} }
+        // 方法3: container.click()
+        if (container) { try { container.click(); } catch(e) {} }
+        // 方法4: 直接设属性
+        if (container) container.setAttribute('aria-checked', 'true');
+        if (radio && !radio.checked) {
+            radio.checked = true;
+            try { radio.dispatchEvent(new Event('change', { bubbles: true })); } catch(e) {}
+        }
+
+        // 通知油猴沙箱：选择已完成
+        document.dispatchEvent(new CustomEvent('__CLICK_RESULT__', {
+            detail: JSON.stringify({
+                radioChecked: radio ? radio.checked : false,
+                ariaChecked: container ? container.getAttribute('aria-checked') : null
+            })
+        }));
+
+        // 自动提交
+        if (doSubmit) {
+            setTimeout(function() {
+                try { window.__clickButton('提交'); } catch(e) {}
+                // 提交后重启继续按钮监听
+                if (doContinue) {
+                    setTimeout(function() {
+                        try { window.__watchContinue(true); } catch(e) {}
+                    }, 300);
+                }
+            }, 800);
+        }
+    };
+
+    // 通用按钮点击：按按钮文字匹配
+    window.__clickButton = function(text) {
+        var allButtons = document.querySelectorAll('button');
+        for (var i = 0; i < allButtons.length; i++) {
+            if (allButtons[i].textContent.trim() === text) {
+                var seq = ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click'];
+                for (var j = 0; j < seq.length; j++) {
+                    var evt = new MouseEvent(seq[j], {
+                        bubbles: true, cancelable: true,
+                        view: window, button: 0, buttons: 1,
+                        clientX: 100, clientY: 100
+                    });
+                    try { Object.defineProperty(evt, 'isTrusted', { value: true }); } catch(e) {}
+                    allButtons[i].dispatchEvent(evt);
+                }
+                allButtons[i].click();
+                document.dispatchEvent(new CustomEvent('__BUTTON_CLICKED__', {
+                    detail: JSON.stringify({ text: text, buttonIndex: i })
+                }));
+                return true;
+            }
+        }
+        return false;
+    };
+
+    // 监听"继续"按钮出现并自动点击（持续运行，不自行清除）
+    var _continueTimer = null;
+    var _lastClickedText = '';
+    var _lastClickedTime = 0;
+    window.__watchContinue = function(enable) {
+        if (_continueTimer) { clearInterval(_continueTimer); _continueTimer = null; }
+        if (!enable) return;
+        _continueTimer = setInterval(function() {
+            var allBtns = document.querySelectorAll('button');
+            for (var bi = 0; bi < allBtns.length; bi++) {
+                var txt = allBtns[bi].textContent.trim();
+                if (txt === '继续' || txt === '下一题' || txt === 'Next') {
+                    // 防重复：5 秒内不再次点击相同文字的按钮
+                    var now = Date.now();
+                    if (_lastClickedText === txt && now - _lastClickedTime < 5000) return;
+                    _lastClickedText = txt;
+                    _lastClickedTime = now;
+                    setTimeout(function() {
+                        try { window.__clickButton(txt); } catch(e) {}
+                    }, 300);
+                    return;
+                }
+            }
+        }, 600);
+    };
+})();
+`;
+        document.documentElement.appendChild(script);
+        script.remove();
+    }
+    injectClickAgent();
+
+    // ====== 样式注入 ======
+    GM_addStyle(`
+        #ai-top-panel {
+            position: fixed; top: 20px; right: 20px; width: 340px;
+            background: #fdfdfd; border: 1px solid #d1d1d1; border-radius: 4px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.05); z-index: 2147483647;
+            padding: 15px; box-sizing: border-box; display: none;
+            font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
+        }
+        #ai-top-panel h3 {
+            margin: 0 0 10px 0; font-size: 14px; color: #666;
+            border-bottom: 1px solid #eee; padding-bottom: 5px; font-weight: bold;
+        }
+        .cfg-group { margin-bottom: 10px; }
+        .cfg-group label { display: block; font-size: 11px; color: #888; margin-bottom: 3px; }
+        .cfg-group input[type="text"] {
+            width: 100%; padding: 6px; border: 1px solid #e0e0e0; border-radius: 2px;
+            box-sizing: border-box; font-size: 12px; background: #fafafa; color: #444;
+        }
+        .save-btn {
+            width: 100%; padding: 7px; background: #f0f0f0; color: #555; border: 1px solid #ccc;
+            border-radius: 3px; cursor: pointer; font-size: 12px; transition: all 0.2s;
+        }
+        .save-btn:hover { background: #e8e8e8; border-color: #bbb; }
+
+        #ai-log-container {
+            margin-top: 12px; height: 240px; background: #ffffff;
+            border: 1px solid #e8e8e8; border-radius: 2px; overflow-y: auto;
+            font-size: 12px; padding: 8px; color: #444;
+        }
+        .log-line { margin-bottom: 10px; border-bottom: 1px dashed #eee; padding-bottom: 6px; }
+        .log-q { color: #777; margin-bottom: 3px; word-break: break-all; }
+        .log-a { color: #333; font-weight: bold; background: #f0f7f0; padding: 2px 4px; border-radius: 2px; word-break: break-all; }
+        .log-info { color: #888; font-size: 11px; margin-bottom: 3px; word-break: break-all; }
+
+        #ai-trigger {
+            position: fixed; bottom: 30px; right: 30px; width: 36px; height: 36px;
+            background: #f0f0f0; color: #999; border: 1px solid #ccc; border-radius: 50%;
+            display: flex; align-items: center; justify-content: center; cursor: pointer;
+            z-index: 2147483647; font-size: 10px; box-shadow: 0 1px 4px rgba(0,0,0,0.1);
+        }
+        #ai-trigger:hover { color: #666; border-color: #bbb; background: #e8e8e8; }
+
+    `);
+
+    // ====== 配置管理 ======
+    const getConfig = () => ({
+        key: GM_getValue("api_key", ""),
+        host: GM_getValue("api_host", "https://api.deepseek.com/chat/completions"),
+        autoClick: GM_getValue("auto_click", true),
+        autoSubmit: GM_getValue("auto_submit", true),
+        autoContinue: GM_getValue("auto_continue", true)
+    });
+
+    // 注入继续按钮监听配置到页面上下文
+    function syncContinueWatcher(enable) {
+        const s = document.createElement('script');
+        s.textContent = 'window.__watchContinue(' + (enable ? 'true' : 'false') + ');';
+        document.documentElement.appendChild(s);
+        s.remove();
+    }
+
+    // ====== 日志系统（简洁 QA 格式）=======
+    function logQA(question, answer) {
+        const payload = { type: 'AI_QA_LOG', q: question, a: answer };
+        try {
+            if (window.self !== window.top) {
+                window.top.postMessage(payload, '*');
+            } else {
+                renderQA(payload);
+            }
+        } catch (e) { console.log('Q: ' + question + ' | A: ' + answer); }
+    }
+
+    function logInfo(msg) {
+        const payload = { type: 'AI_QA_LOG', q: '', a: 'ℹ ' + msg };
+        try {
+            if (window.self !== window.top) {
+                window.top.postMessage(payload, '*');
+            } else {
+                renderQA(payload);
+            }
+        } catch (e) { console.log(msg); }
+    }
+
+    function renderQA(data) {
+        const container = document.getElementById('ai-log-container');
+        if (!container) return;
+        const div = document.createElement('div');
+        div.className = 'log-line';
+        if (data.q) {
+            div.innerHTML = '<div class="log-q">Q: ' + data.q + '</div>'
+                + '<div class="log-a">A: ' + data.a + '</div>';
+        } else {
+            div.innerHTML = '<div class="log-info">' + data.a + '</div>';
+        }
+        container.appendChild(div);
+        container.scrollTop = container.scrollHeight;
+    }
+
+    // ====== GUI 注入 ======
+    if (window.self === window.top) {
+        const initUI = () => {
+            if (document.getElementById('ai-top-panel')) return;
+            const c = getConfig();
+            const panel = document.createElement('div');
+            panel.id = 'ai-top-panel';
+            panel.innerHTML = '<h3>答题辅助（AI返回的内容仅供参考，请进行人工审核）</h3>'
+                + '<div class="cfg-group"><label>API KEY</label><div style="display:flex;gap:4px"><input type="password" id="ipt-key" value="' + c.key + '" placeholder="输入密钥" style="flex:1"> <span id="toggle-key-vis" style="cursor:pointer;padding:4px 6px;border:1px solid #e0e0e0;border-radius:2px;font-size:12px;background:#fafafa;user-select:none">👁</span></div></div>'
+                + '<div class="cfg-group"><label><input type="checkbox" id="chk-auto" ' + (c.autoClick ? 'checked' : '') + '> 自动选择答案</label></div>'
+                + '<div class="cfg-group"><label><input type="checkbox" id="chk-submit" ' + (c.autoSubmit ? 'checked' : '') + '> 选完后自动点击提交</label></div>'
+                + '<div class="cfg-group"><label><input type="checkbox" id="chk-continue" ' + (c.autoContinue ? 'checked' : '') + '> 提交后自动点击继续</label></div>'
+                + '<button class="save-btn" id="btn-save">保存</button>'
+                + '<div id="ai-log-container"><div class="log-line"><div class="log-info">脚本已启动 v3.0</div></div></div>';
+            document.body.appendChild(panel);
+            const trigger = document.createElement('div');
+            trigger.id = 'ai-trigger'; trigger.innerText = 'AI';
+            trigger.onclick = () => { panel.style.display = panel.style.display === 'none' ? 'block' : 'none'; };
+            document.body.appendChild(trigger);
+            document.getElementById('btn-save').onclick = () => {
+                GM_setValue("api_key", document.getElementById('ipt-key').value.trim());
+                GM_setValue("auto_click", document.getElementById('chk-auto').checked);
+                GM_setValue("auto_submit", document.getElementById('chk-submit').checked);
+                GM_setValue("auto_continue", document.getElementById('chk-continue').checked);
+                syncContinueWatcher(document.getElementById('chk-continue').checked);
+                panel.style.display = 'none';
+            };
+            document.getElementById('toggle-key-vis').onclick = function() {
+                var inp = document.getElementById('ipt-key');
+                inp.type = inp.type === 'password' ? 'text' : 'password';
+                this.textContent = inp.type === 'password' ? '👁' : '👁‍🗨';
+            };
+            window.addEventListener('message', function(e) {
+                if (e.data && e.data.type === 'AI_QA_LOG') renderQA(e.data);
+            });
+            // 监听页面代理返回的结果
+            document.addEventListener('__CLICK_RESULT__', function(e) {
+                try {
+                    var d = JSON.parse(e.detail);
+                    logInfo('已选择: ' + (d.radioChecked ? 'radio 已选中' : ''));
+                } catch(ex) {}
+            });
+            // 初始化继续按钮监听
+            if (c.autoContinue) syncContinueWatcher(true);
+            logInfo('自动提交: ' + (c.autoSubmit ? '开' : '关') + ' | 自动继续: ' + (c.autoContinue ? '开' : '关'));
+        };
+        document.readyState === 'loading' ? document.addEventListener('DOMContentLoaded', initUI) : initUI();
+    }
+
+    // ====== 核心逻辑 ======
+    function normalizeText(s) {
+        return s.replace(/[（(]/g, '(').replace(/[）)]/g, ')')
+                .replace(/[‘’']/g, "'").replace(/[“”"]/g, '"')
+                .replace(/　/g, ' ').replace(/[\s]+/g, ' ').trim();
+    }
+
+    let lastQ = "";
+    setInterval(async () => {
+        const titleEl = document.querySelector(".player-shape-view p, .published-rich-text p");
+        const items = document.querySelectorAll(".choice-view");
+        if (!titleEl || items.length === 0) return;
+        const q = titleEl.innerText.trim();
+        if (!q || q === lastQ) return;
+        lastQ = q;
+
+        const itemsArr = Array.from(items);
+        const options = itemsArr.map(el =>
+            el.querySelector(".choice-content p, .published-rich-text span")?.innerText.trim()
+        ).filter(t => t);
+        if (options.length === 0) return;
+
+        const conf = getConfig();
+        if (!conf.key) {
+            logInfo('未配置 API KEY');
+            return;
+        }
+
+        logInfo('正在请求 AI...');
+        GM_xmlhttpRequest({
+            method: "POST", url: conf.host,
+            headers: { "Content-Type": "application/json", "Authorization": "Bearer " + conf.key },
+            data: JSON.stringify({
+                model: "deepseek-chat",
+                messages: [
+                    { role: "system", content: "你是一名资深医学考试专家。请根据临床执业医师考试规范和医学指南分析题目。仅输出匹配选项的原文，严禁任何解释、索引或多余符号。若无法确定，输出最可能的选项。" },
+                    { role: "user", content: "直接返回正确选项原文。题:" + q + "\n选:" + options.join('|') }
+                ],
+                temperature: 0.1
+            }),
+            onload: res => {
+                try {
+                    const ans = JSON.parse(res.responseText).choices[0].message.content.trim();
+                    const normalizedOptions = options.map(o => normalizeText(o));
+                    const normalizedAns = normalizeText(ans);
+                    const idx = normalizedOptions.findIndex(o => o.includes(normalizedAns) || normalizedAns.includes(o));
+                    const match = idx >= 0 ? options[idx] : null;
+
+                    if (match) {
+                        logQA(q, match);
+                        if (conf.autoClick) {
+                            const callScript = document.createElement('script');
+                            callScript.textContent = 'window.__autoClickAgent(' + idx + ',' + conf.autoSubmit + ',' + conf.autoContinue + ');';
+                            document.documentElement.appendChild(callScript);
+                            callScript.remove();
+                        }
+                    } else {
+                        logQA(q, '⚠ 未匹配: ' + ans);
+                    }
+                } catch(e) {
+                    logInfo('解析失败: ' + e.message);
+                }
+            },
+            onerror: () => { logInfo('网络请求失败'); },
+            ontimeout: () => { logInfo('请求超时'); }
+        });
+    }, 4000);
+})();
