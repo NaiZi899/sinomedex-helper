@@ -1,0 +1,2 @@
+# sinomedex-helper
+基于DeepseekV4模型的中国生物医学文献服务系统答题助手
